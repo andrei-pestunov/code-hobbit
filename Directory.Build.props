@@ -1,0 +1,40 @@
+<Project>
+    <PropertyGroup>
+        <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+        <LangVersion>latest</LangVersion>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <NoWarn>NU3018;NU3042</NoWarn>
+        <AnalysisMode>All</AnalysisMode>
+        <AnalysisLevel>latest</AnalysisLevel>
+        <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    </PropertyGroup>
+
+    <!-- Workaround for https://github.com/dotnet/roslyn/issues/41640 -->
+    <PropertyGroup>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <CodeStyle_NoWarn>CS1591;CS1573</CodeStyle_NoWarn>
+    </PropertyGroup>
+
+    <!-- Custom analyzers -->
+    <ItemGroup>
+        <PackageReference
+            Include="StyleCop.Analyzers"
+            PrivateAssets="all"
+            Condition="$(MSBuildProjectExtension) == '.csproj'"
+            Version="1.1.118" />
+        <PackageReference
+            Include="SonarAnalyzer.CSharp"
+            PrivateAssets="all"
+            Condition="$(MSBuildProjectExtension) == '.csproj'"
+            Version="10.15.0.120848" />
+        <PackageReference
+            Include="Roslynator.Analyzers"
+            PrivateAssets="all"
+            Condition="$(MSBuildProjectExtension) == '.csproj'"
+            Version="4.14.1" />
+    </ItemGroup>
+
+</Project>
