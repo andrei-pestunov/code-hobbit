@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.AI;
+﻿using System.Runtime.CompilerServices;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.VectorData;
 
 namespace CodeHobbit.Rag;
@@ -8,73 +9,87 @@ namespace CodeHobbit.Rag;
 /// </summary>
 /// <param name="store">The vector store for storing embeddings.</param>
 /// <param name="embedder">The embedding generator.</param>
-/// <param name="rootPath">The root path to index.</param>
-public sealed class Service(
-    VectorStore store,
-    IEmbeddingGenerator<string, Embedding<float>> embedder,
-    string rootPath)
+public sealed class Service(VectorStore store, IEmbeddingGenerator<byte[], Embedding<float>> embedder)
 {
-    private const string COLLECTION_NAME = "golden_patterns";
+    private static readonly EmbeddingGenerationOptions Options = new ()
+    {
+        Dimensions = 1536
+    };
 
     /// <summary>
-    /// Indexes all .cs and .md files in the golden repository.
+    /// Indexes files in the specified root path with given extensions.
     /// </summary>
+    /// <param name="rootPath">The root path to index.</param>
+    /// <param name="extensions">File extensions to include in the index.</param>
+    /// <param name="collectionName">The name of the collection to store the indexed data.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>A task representing the asynchronous operation.</returns>
-    public async Task IndexGoldenRepoAsync(CancellationToken ct = default)
+    public async Task Index(string rootPath, ISet<string> extensions, string collectionName, CancellationToken ct = default)
     {
-        var collection = store.GetCollection<string, Document>(COLLECTION_NAME);
+        var collection = store.GetCollection<string, Document>(collectionName);
+
         await collection.EnsureCollectionExistsAsync(ct);
 
-        var files = Directory.EnumerateFiles(rootPath, "*.*", SearchOption.AllDirectories)
-                             .Where(p => p.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ||
-                                         p.EndsWith(".md", StringComparison.OrdinalIgnoreCase));
+        var files = Directory
+            .EnumerateFiles(rootPath, "*.*", SearchOption.AllDirectories)
+            .Where(file => extensions.Contains(Path.GetExtension(file)))
+            .ToList();
 
-        foreach (var path in files)
+        const int BATCH_SIZE = 50;
+
+        foreach (var batch in files.Chunk(BATCH_SIZE))
         {
-            var text = await File.ReadAllTextAsync(path, ct);
-            var embeddingResult = await embedder.GenerateAsync(text, cancellationToken: ct);
+            ct.ThrowIfCancellationRequested();
 
-            // Store relative path with forward slashes for cross-platform consistency
-            var relativePath = Path.GetRelativePath(rootPath, path).Replace('\\', '/');
+            var documents = new List<Document>(batch.Length);
 
-            var document = new Document
+            foreach (var path in batch)
             {
-                Id = Guid.NewGuid().ToString(),
-                Path = relativePath,
-                Text = text,
-                Embedding = embeddingResult.Vector
-            };
+                var data = await File.ReadAllBytesAsync(path, ct);
 
-            await collection.UpsertAsync(document, ct);
+                if (data.Length == 0)
+                {
+                    continue;
+                }
+
+                var embedding = await embedder.GenerateAsync(data, Options, ct);
+                var relativePath = Path.GetRelativePath(rootPath, path);
+
+                documents.Add(new ()
+                {
+                    Id = Guid.CreateVersion7(),
+                    Path = relativePath,
+                    Data = data,
+                    Embedding = embedding.Vector
+                });
+            }
+
+            if (documents.Count > 0)
+            {
+                await collection.UpsertAsync(documents, ct);
+            }
         }
     }
 
     /// <summary>
     /// Searches for patterns matching the given query.
     /// </summary>
+    /// <param name="collectionName">The name of the collection to search.</param>
     /// <param name="query">The search query.</param>
     /// <param name="maxResults">Maximum number of results to return.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>A list of matching patterns.</returns>
-    public async Task<IReadOnlyList<Match>> SearchPatternsAsync(
-        string query,
-        int maxResults = 5,
-        CancellationToken ct = default)
+    public async IAsyncEnumerable<Match> Search(string collectionName, byte[] query, int maxResults = 5, [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var collection = store.GetCollection<string, Document>(COLLECTION_NAME);
-        var embeddingResult = await embedder.GenerateAsync(query, cancellationToken: ct);
+        var collection = store.GetCollection<string, Document>(collectionName);
+        var embedding = await embedder.GenerateAsync(query, Options, ct);
 
-        var results = new List<Match>();
-
-        await foreach (var result in collection.SearchAsync(embeddingResult.Vector, top: maxResults, cancellationToken: ct))
+        await foreach (var result in collection.SearchAsync(embedding.Vector, top: maxResults, cancellationToken: ct))
         {
-            results.Add(new Match(
+            yield return new Match(
                 Path: result.Record.Path,
                 Score: result.Score ?? 0,
-                Snippet: result.Record.Text));
+                Data: result.Record.Data);
         }
-
-        return results;
     }
 }
